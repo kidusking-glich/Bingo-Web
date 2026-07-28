@@ -1,0 +1,678 @@
+import { Server } from 'socket.io';
+import prisma from '../db';
+import { getSettingNumber } from '../utils/settings';
+import { ProbabilityEngine, BingoCardData } from './ProbabilityEngine';
+
+const getRandomUniqueSubarray = (min: number, max: number, count: number): number[] => {
+  const pool = Array.from({ length: max - min + 1 }, (_, i) => min + i);
+  const result: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const idx = Math.floor(Math.random() * pool.length);
+    result.push(pool.splice(idx, 1)[0]);
+  }
+  return result;
+};
+
+export const generateBingoGrid = (): number[][] => {
+  const columns = [
+    getRandomUniqueSubarray(1, 15, 5),
+    getRandomUniqueSubarray(16, 30, 5),
+    getRandomUniqueSubarray(31, 45, 5),
+    getRandomUniqueSubarray(46, 60, 5),
+    getRandomUniqueSubarray(61, 75, 5),
+  ];
+
+  const grid: number[][] = [];
+  for (let r = 0; r < 5; r++) {
+    const row: number[] = [];
+    for (let c = 0; c < 5; c++) {
+      if (r === 2 && c === 2) {
+        row.push(0); // FREE space
+      } else {
+        row.push(columns[c][r]);
+      }
+    }
+    grid.push(row);
+  }
+  return grid;
+};
+
+interface RoomState {
+  roomId: string;
+  gameId: string | null;
+  state: 'WAITING' | 'PLAYING' | 'FINISHED';
+  countdown: number; // countdown in seconds to start
+  calledNumbers: number[];
+  players: {
+    userId: string;
+    username: string;
+    isBot: boolean;
+    socketId?: string;
+    cards: {
+      id: string;
+      grid: number[][];
+      daubed: boolean[][];
+    }[];
+  }[];
+  gameTimer: NodeJS.Timeout | null;
+  countdownTimer: NodeJS.Timeout | null;
+}
+
+export class BingoEngine {
+  private io: Server;
+  private rooms: Map<string, RoomState> = new Map();
+
+  constructor(io: Server) {
+    this.io = io;
+    this.initializeRooms();
+  }
+
+  /**
+   * Loads rooms from DB and initializes active states in memory
+   */
+  private async initializeRooms() {
+    try {
+      const dbRooms = await prisma.bingoRoom.findMany();
+      
+      // If no rooms exist, create default ones
+      if (dbRooms.length === 0) {
+        const defaults = [
+          { name: 'Free Neon Lobby', type: 'FREE', entryFee: 0.0, prizePool: 0.0 },
+          { name: 'Standard Cyan Club', type: 'PAID', entryFee: 5.0, prizePool: 20.0 },
+          { name: 'High-Roller Vegas Glow', type: 'PAID', entryFee: 20.0, prizePool: 80.0 },
+          { name: 'Glow Tournament Room', type: 'TOURNAMENT', entryFee: 10.0, prizePool: 50.0 },
+        ];
+
+        for (const room of defaults) {
+          const newRoom = await prisma.bingoRoom.create({
+            data: {
+              name: room.name,
+              type: room.type as any,
+              entryFee: room.entryFee,
+              prizePool: room.prizePool,
+              maxPlayers: 50,
+            },
+          });
+          dbRooms.push(newRoom);
+        }
+      }
+
+      for (const room of dbRooms) {
+        this.rooms.set(room.id, {
+          roomId: room.id,
+          gameId: null,
+          state: 'WAITING',
+          countdown: 15,
+          calledNumbers: [],
+          players: [],
+          gameTimer: null,
+          countdownTimer: null,
+        });
+      }
+      console.log(`Bingo Engine: Initialized ${dbRooms.length} rooms.`);
+    } catch (error) {
+      console.error('Failed to initialize rooms in Bingo Engine:', error);
+    }
+  }
+
+  public getRoomsStatus() {
+    const list = [];
+    for (const [id, room] of this.rooms.entries()) {
+      list.push({
+        roomId: id,
+        state: room.state,
+        playerCount: room.players.length,
+        activePlayers: room.players.filter(p => !p.isBot).length,
+        botCount: room.players.filter(p => p.isBot).length,
+        countdown: room.countdown,
+      });
+    }
+    return list;
+  }
+
+  /**
+   * Joins a room
+   */
+  public async joinRoom(roomId: string, userId: string, username: string, socketId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room) throw new Error('Room not found');
+
+    // Check if user is already in room
+    const exists = room.players.find((p) => p.userId === userId);
+    if (exists) {
+      exists.socketId = socketId;
+      this.broadcastRoomUpdate(roomId);
+      return;
+    }
+
+    // Generate Card for user
+    const grid = generateBingoGrid();
+    const daubed = Array(5).fill(null).map(() => Array(5).fill(false));
+    daubed[2][2] = true; // free space
+
+    room.players.push({
+      userId,
+      username,
+      isBot: false,
+      socketId,
+      cards: [{
+        id: Math.random().toString(36).substring(2, 9),
+        grid,
+        daubed,
+      }],
+    });
+
+    this.io.to(roomId).emit('chat_message', {
+      username: 'System',
+      message: `${username} joined the lobby!`,
+      createdAt: new Date(),
+    });
+
+    this.broadcastRoomUpdate(roomId);
+    this.startCountdownIfNeeded(roomId);
+  }
+
+  /**
+   * Leaves a room
+   */
+  public async leaveRoom(roomId: string, userId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    const idx = room.players.findIndex((p) => p.userId === userId);
+    if (idx !== -1) {
+      const username = room.players[idx].username;
+      room.players.splice(idx, 1);
+
+      // No entry fee refund needed for FREE rooms or if game already started
+      this.io.to(roomId).emit('chat_message', {
+        username: 'System',
+        message: `${username} left the lobby.`,
+        createdAt: new Date(),
+      });
+
+      this.broadcastRoomUpdate(roomId);
+
+      // If room is empty, reset state to WAITING and clear timers
+      if (room.players.filter((p) => !p.isBot).length === 0) {
+        this.resetRoom(roomId);
+      }
+    }
+  }
+
+  private resetRoom(roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    if (room.countdownTimer) clearInterval(room.countdownTimer);
+    if (room.gameTimer) clearInterval(room.gameTimer);
+
+    room.state = 'WAITING';
+    room.gameId = null;
+    room.countdown = 15;
+    room.calledNumbers = [];
+    room.players = [];
+    room.gameTimer = null;
+    room.countdownTimer = null;
+
+    this.broadcastRoomUpdate(roomId);
+  }
+
+  private startCountdownIfNeeded(roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room || room.state !== 'WAITING' || room.countdownTimer) return;
+
+    room.countdown = 15;
+
+    room.countdownTimer = setInterval(async () => {
+      room.countdown--;
+
+      // Spawn bots to make it look active if countdown gets low and player count is small
+      if (room.countdown === 8 && room.players.length < 5) {
+        this.spawnBots(roomId, Math.floor(Math.random() * 3) + 2);
+      }
+
+      this.io.to(roomId).emit('room_countdown', { countdown: room.countdown });
+
+      if (room.countdown <= 0) {
+        clearInterval(room.countdownTimer!);
+        room.countdownTimer = null;
+        await this.startGame(roomId);
+      }
+    }, 1000);
+  }
+
+  private spawnBots(roomId: string, count: number) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    const botNames = ['NeonPixel', 'GlowMaster', 'LazerDaub', 'CyberCall', 'LuckyGlow', 'VectorWin', 'MatrixBot', 'CryptoDaub'];
+
+    for (let i = 0; i < count; i++) {
+      const botName = botNames[Math.floor(Math.random() * botNames.length)] + '#' + Math.floor(Math.random() * 900 + 100);
+      const botId = 'bot-' + Math.random().toString(36).substring(2, 9);
+
+      const grid = generateBingoGrid();
+      const daubed = Array(5).fill(null).map(() => Array(5).fill(false));
+      daubed[2][2] = true; // free space
+
+      room.players.push({
+        userId: botId,
+        username: botName,
+        isBot: true,
+        cards: [{
+          id: 'card-' + Math.random().toString(36).substring(2, 9),
+          grid,
+          daubed,
+        }],
+      });
+    }
+
+    this.broadcastRoomUpdate(roomId);
+  }
+
+  private async startGame(roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room || room.state !== 'WAITING') return;
+
+    const dbRoom = await prisma.bingoRoom.findUnique({ where: { id: roomId } });
+    if (!dbRoom) return;
+
+    const entryFee = dbRoom.entryFee.toNumber();
+
+    // Deduct entry fee from all human players when game actually starts
+    if (entryFee > 0) {
+      for (const player of room.players) {
+        if (player.isBot) continue;
+
+        const wallet = await prisma.wallet.findUnique({ where: { userId: player.userId } });
+        if (!wallet || wallet.balance.toNumber() < entryFee) {
+          // Kick player with insufficient funds
+          room.players = room.players.filter(p => p.userId !== player.userId);
+          this.io.to(roomId).emit('chat_message', {
+            username: 'System',
+            message: `${player.username} removed - insufficient balance for entry fee.`,
+            createdAt: new Date(),
+          });
+          continue;
+        }
+
+        await prisma.$transaction(async (tx) => {
+          await tx.wallet.update({
+            where: { userId: player.userId },
+            data: { balance: { decrement: entryFee } },
+          });
+
+          await tx.transaction.create({
+            data: {
+              userId: player.userId,
+              type: 'ENTRY_FEE',
+              amount: -entryFee,
+              description: `Entry fee for room ${dbRoom.name}`,
+            },
+          });
+
+          // Referral commission
+          const userDetails = await tx.user.findUnique({ where: { id: player.userId } });
+          if (userDetails?.referredById) {
+            const commissionPct = await getSettingNumber('referral_commission_pct');
+            const commission = (entryFee * commissionPct) / 100;
+
+            if (commission > 0) {
+              await tx.wallet.update({
+                where: { userId: userDetails.referredById },
+                data: {
+                  balance: { increment: commission },
+                  referralEarnings: { increment: commission },
+                },
+              });
+
+              await tx.transaction.create({
+                data: {
+                  userId: userDetails.referredById,
+                  type: 'REFERRAL_BONUS',
+                  amount: commission,
+                  description: `Referral commission from ${player.username}'s entry fee`,
+                },
+              });
+
+              await tx.referralEarning.create({
+                data: {
+                  userId: userDetails.referredById,
+                  referredId: player.userId,
+                  amount: commission,
+                },
+              });
+
+              await tx.notification.create({
+                data: {
+                  userId: userDetails.referredById,
+                  title: 'Referral Commission Earned!',
+                  message: `You earned $${commission.toFixed(2)} from ${player.username}'s room play!`,
+                },
+              });
+            }
+          }
+        });
+      }
+    }
+
+    // Create DB BingoGame
+    const game = await prisma.bingoGame.create({
+      data: {
+        roomId: roomId,
+        state: 'PLAYING',
+        startedAt: new Date(),
+      },
+    });
+
+    room.gameId = game.id;
+    room.state = 'PLAYING';
+    room.calledNumbers = [];
+
+    // Create GameParticipant and BingoCard records in DB
+    const participantCreates = [];
+    const cardCreates = [];
+
+    for (const player of room.players) {
+      participantCreates.push(
+        prisma.gameParticipant.create({
+          data: {
+            gameId: game.id,
+            userId: player.isBot ? '00000000-0000-0000-0000-000000000000' : player.userId,
+            isBot: player.isBot,
+          },
+        })
+      );
+
+      for (const card of player.cards) {
+        cardCreates.push(
+          prisma.bingoCard.create({
+            data: {
+              id: card.id,
+              gameId: game.id,
+              userId: player.isBot ? '00000000-0000-0000-0000-000000000000' : player.userId, // Use dummy UUID for bots
+              grid: card.grid as any,
+              daubed: card.daubed as any,
+              isBot: player.isBot,
+            },
+          })
+        );
+      }
+    }
+
+    // Seed dummy bot user if needed in DB to satisfy foreign keys
+    try {
+      const dummyBot = await prisma.user.findUnique({ where: { id: '00000000-0000-0000-0000-000000000000' } });
+      if (!dummyBot) {
+        await prisma.user.create({
+          data: {
+            id: '00000000-0000-0000-0000-000000000000',
+            email: 'bot@bingo.internal',
+            username: 'AI_BOTS',
+            passwordHash: 'dummy',
+            referralCode: 'BOTSCODE',
+            role: 'USER',
+          },
+        });
+      }
+    } catch (_) {}
+
+    await Promise.all([...participantCreates, ...cardCreates]);
+
+    this.io.to(roomId).emit('game_started', {
+      gameId: game.id,
+      players: room.players.map((p) => ({
+        userId: p.userId,
+        username: p.username,
+        isBot: p.isBot,
+        cards: p.cards.map((c) => ({ id: c.id, grid: c.grid })),
+      })),
+    });
+
+    this.broadcastRoomUpdate(roomId);
+    this.startGameTicks(roomId);
+  }
+
+  private async startGameTicks(roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    const callIntervalSeconds = await getSettingNumber('number_calling_speed');
+    const bias = await ProbabilityEngine.decideTargetBias();
+
+    room.gameTimer = setInterval(() => {
+      this.tickGame(roomId, bias);
+    }, callIntervalSeconds * 1000);
+  }
+
+  private tickGame(roomId: string, bias: 'HUMAN' | 'BOT' | 'NEUTRAL') {
+    const room = this.rooms.get(roomId);
+    if (!room || room.state !== 'PLAYING') return;
+
+    // Collect all card data for the probability engine
+    const cardsData: BingoCardData[] = [];
+    for (const player of room.players) {
+      for (const card of player.cards) {
+        cardsData.push({
+          id: card.id,
+          grid: card.grid,
+          daubed: card.daubed,
+          isBot: player.isBot,
+        });
+      }
+    }
+
+    const nextBall = ProbabilityEngine.selectNextBall(cardsData, room.calledNumbers, bias);
+    
+    if (nextBall === 0 || room.calledNumbers.length >= 75) {
+      // Draw game (all numbers called, no winner)
+      this.endGame(roomId, null, null);
+      return;
+    }
+
+    room.calledNumbers.push(nextBall);
+
+    // Update server state for bot card auto daubing
+    for (const player of room.players) {
+      if (player.isBot) {
+        for (const card of player.cards) {
+          for (let r = 0; r < 5; r++) {
+            for (let c = 0; c < 5; c++) {
+              if (card.grid[r][c] === nextBall) {
+                card.daubed[r][c] = true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Broadcast number call
+    this.io.to(roomId).emit('number_called', {
+      number: nextBall,
+      calledNumbers: room.calledNumbers,
+    });
+
+    // Check if bots have won on this call
+    for (const player of room.players) {
+      if (player.isBot) {
+        for (const card of player.cards) {
+          const isBotWin = ProbabilityEngine.verifyWin(card.grid, card.daubed);
+          if (isBotWin) {
+            // Bot automatically claims BINGO
+            this.endGame(roomId, player.userId, card.id);
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * User manually claims BINGO
+   */
+  public async claimBingo(roomId: string, userId: string, cardId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room || room.state !== 'PLAYING') throw new Error('Game not active');
+
+    const player = room.players.find((p) => p.userId === userId);
+    if (!player) throw new Error('Player not in game');
+
+    const card = player.cards.find((c) => c.id === cardId);
+    if (!card) throw new Error('Card not found');
+
+    // 1. Verify that all daubed numbers are actually called (anti-cheat)
+    for (let r = 0; r < 5; r++) {
+      for (let c = 0; c < 5; c++) {
+        if (r === 2 && c === 2) continue; // Skip FREE space
+        if (card.daubed[r][c]) {
+          const val = card.grid[r][c];
+          if (!room.calledNumbers.includes(val)) {
+            throw new Error('Cheat detected: Daubed number was not called.');
+          }
+        }
+      }
+    }
+
+    // 2. Verify completed pattern
+    const isWin = ProbabilityEngine.verifyWin(card.grid, card.daubed);
+
+    if (isWin) {
+      await this.endGame(roomId, userId, cardId);
+    } else {
+      throw new Error('Invalid Bingo pattern. Keep daubing!');
+    }
+  }
+
+  /**
+   * Client reports number daub
+   */
+  public daubNumber(roomId: string, userId: string, cardId: string, row: number, col: number) {
+    const room = this.rooms.get(roomId);
+    if (!room || room.state !== 'PLAYING') return;
+
+    const player = room.players.find((p) => p.userId === userId);
+    if (!player) return;
+
+    const card = player.cards.find((c) => c.id === cardId);
+    if (!card) return;
+
+    // Check if the number is called
+    const val = card.grid[row][col];
+    if (val === 0 || room.calledNumbers.includes(val)) {
+      card.daubed[row][col] = true;
+      
+      // Update DB record asynchronously to not block event loop
+      prisma.bingoCard.update({
+        where: { id: cardId },
+        data: { daubed: card.daubed as any },
+      }).catch(err => console.error('Error updating daub in DB:', err));
+    }
+  }
+
+  private async endGame(roomId: string, winnerId: string | null, winningCardId: string | null) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    if (room.gameTimer) {
+      clearInterval(room.gameTimer);
+      room.gameTimer = null;
+    }
+
+    room.state = 'FINISHED';
+
+    const dbRoom = await prisma.bingoRoom.findUnique({ where: { id: roomId } });
+    if (!dbRoom || !room.gameId) return;
+
+    const prizePool = dbRoom.prizePool.toNumber();
+    let winnerName = 'No One (Draw)';
+
+    if (winnerId && winningCardId) {
+      const winnerPlayer = room.players.find((p) => p.userId === winnerId);
+      if (winnerPlayer) {
+        winnerName = winnerPlayer.username;
+
+        // Perform payouts if the winner is a real player
+        if (!winnerPlayer.isBot) {
+          await prisma.$transaction(async (tx) => {
+            // Update wallet
+            await tx.wallet.update({
+              where: { userId: winnerId },
+              data: {
+                balance: { increment: prizePool },
+                totalWinnings: { increment: prizePool },
+              },
+            });
+
+            // Create winning transaction
+            await tx.transaction.create({
+              data: {
+                userId: winnerId,
+                type: 'GAME_WIN',
+                amount: prizePool,
+                description: `Won game in room ${dbRoom.name}`,
+              },
+            });
+
+            // Notification
+            await tx.notification.create({
+              data: {
+                userId: winnerId,
+                title: 'You Won BINGO!',
+                message: `Congratulations! You won the prize pool of $${prizePool.toFixed(2)} in ${dbRoom.name}!`,
+              },
+            });
+          });
+        }
+
+        // Update card in DB
+        await prisma.bingoCard.update({
+          where: { id: winningCardId },
+          data: { isWinner: true },
+        });
+      }
+    }
+
+    // Update BingoGame in DB
+    await prisma.bingoGame.update({
+      where: { id: room.gameId },
+      data: {
+        state: 'FINISHED',
+        numbersCalled: room.calledNumbers,
+        winningCardId,
+        winnerId: winnerId?.startsWith('bot-') ? '00000000-0000-0000-0000-000000000000' : winnerId,
+        finishedAt: new Date(),
+      },
+    });
+
+    this.io.to(roomId).emit('game_finished', {
+      winnerId,
+      winnerName,
+      winningCardId,
+      prizePool,
+    });
+
+    // Reset room back to WAITING lobby state after a short delay
+    setTimeout(() => {
+      this.resetRoom(roomId);
+    }, 10000);
+  }
+
+  private broadcastRoomUpdate(roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    this.io.to(roomId).emit('room_update', {
+      roomId,
+      state: room.state,
+      countdown: room.countdown,
+      calledNumbers: room.calledNumbers,
+      players: room.players.map((p) => ({
+        userId: p.userId,
+        username: p.username,
+        isBot: p.isBot,
+      })),
+    });
+  }
+}
