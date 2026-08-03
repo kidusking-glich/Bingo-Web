@@ -217,6 +217,7 @@ export default function WalletPage() {
                 <input
                   type="number"
                   step="0.01"
+                  min="0.01"
                   required
                   value={depositAmount}
                   onChange={(e) => setDepositAmount(e.target.value)}
@@ -261,6 +262,7 @@ export default function WalletPage() {
                 <input
                   type="number"
                   step="0.01"
+                  min="0.01"
                   required
                   value={withdrawAmount}
                   onChange={(e) => setWithdrawAmount(e.target.value)}

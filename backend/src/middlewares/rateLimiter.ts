@@ -2,10 +2,9 @@ import { Request, Response, NextFunction } from 'express';
 
 const ipRequests = new Map<string, { count: number; lastReset: number }>();
 
-// Reset window of 1 minute (60,000 ms)
-const WINDOW_MS = 60000;
-// Limit to 100 requests per window
-const MAX_REQUESTS = 100;
+// Configurable via environment variables (falls back to dev-friendly defaults)
+const WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10) || 60000;
+const MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX || '500', 10) || 500;
 
 export const rateLimiter = (req: Request, res: Response, next: NextFunction) => {
   const ip = req.ip || req.socket.remoteAddress || 'unknown';

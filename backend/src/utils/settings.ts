@@ -1,6 +1,6 @@
 import prisma from '../db';
 
-const DEFAULT_SETTINGS: Record<string, string> = {
+export const DEFAULT_SETTINGS: Record<string, string> = {
   welcome_bonus: '10.00',
   referral_bonus: '5.00',
   referral_commission_pct: '10.00',

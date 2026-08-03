@@ -1,16 +1,20 @@
 import { Response } from 'express';
 import prisma from '../db';
 import { AuthRequest } from '../middlewares/auth';
+import { DEFAULT_SETTINGS } from '../utils/settings';
 
 export const getSettings = async (req: AuthRequest, res: Response) => {
   try {
-    const settings = await prisma.adminSetting.findMany();
-    const settingsMap = settings.reduce((acc, curr) => {
+    const dbSettings = await prisma.adminSetting.findMany();
+    const settingsMap = dbSettings.reduce((acc, curr) => {
       acc[curr.key] = curr.value;
       return acc;
     }, {} as Record<string, string>);
 
-    res.json({ settings: settingsMap });
+    // Merge DB settings over defaults so unconfigured keys still have values
+    const merged = { ...DEFAULT_SETTINGS, ...settingsMap };
+
+    res.json({ settings: merged });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to fetch settings' });
   }

@@ -13,10 +13,12 @@ import { authenticateJWT, requireAdmin } from './middlewares/auth';
 import {
   register,
   login,
+  sendVerification,
   verifyEmail,
   forgotPassword,
   resetPassword,
   getProfile,
+  updateProfile,
 } from './controllers/authController';
 import {
   getWalletInfo,
@@ -46,6 +48,11 @@ import {
   getGameplayHistory,
   getKenoStats,
 } from './controllers/adminController';
+import {
+  getNotifications,
+  markAsRead,
+  markAllAsRead,
+} from './controllers/notificationsController';
 import { BingoEngine } from './engine/BingoEngine';
 import { KenoEngine } from './engine/KenoEngine';
 import { setupSocketHandlers } from './engine/socketHandler';
@@ -72,10 +79,12 @@ app.use(rateLimiter);
 // ----------------------------------------------------
 app.post('/api/auth/register', register);
 app.post('/api/auth/login', login);
+app.post('/api/auth/send-verification', authenticateJWT, sendVerification);
 app.post('/api/auth/verify-email', verifyEmail);
 app.post('/api/auth/forgot-password', forgotPassword);
 app.post('/api/auth/reset-password', resetPassword);
 app.get('/api/auth/profile', authenticateJWT, getProfile);
+app.put('/api/auth/profile', authenticateJWT, updateProfile);
 
 // ----------------------------------------------------
 // WALLET ENDPOINTS
@@ -92,6 +101,13 @@ app.get('/api/wallet/withdrawals', authenticateJWT, getWithdrawalHistory);
 // ----------------------------------------------------
 app.get('/api/referrals/stats', authenticateJWT, getReferralStats);
 app.get('/api/referrals/leaderboard', authenticateJWT, getReferralLeaderboard);
+
+// ----------------------------------------------------
+// NOTIFICATIONS ENDPOINTS
+// ----------------------------------------------------
+app.get('/api/notifications', authenticateJWT, getNotifications);
+app.post('/api/notifications/read', authenticateJWT, markAsRead);
+app.post('/api/notifications/read-all', authenticateJWT, markAllAsRead);
 
 // ----------------------------------------------------
 // ROOMS PUBLIC ENDPOINTS

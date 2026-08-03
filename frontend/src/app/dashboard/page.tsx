@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../context/AuthContext';
 import Navbar from '../../components/Navbar';
-import { Trophy, Coins, Users, Gift, Play, ArrowRight, Wallet, Check, Copy } from 'lucide-react';
+import { Trophy, Coins, Users, Gift, Play, ArrowRight, Wallet, Check, Copy, Mail, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
 
 interface Room {
@@ -19,11 +19,16 @@ interface Room {
 }
 
 export default function DashboardPage() {
-  const { user, loading, refreshProfile } = useAuth();
+  const { user, token, loading, refreshProfile } = useAuth();
   const router = useRouter();
   const [rooms, setRooms] = useState<Room[]>([]);
   const [copied, setCopied] = useState(false);
   const [fetchingRooms, setFetchingRooms] = useState(true);
+  const [verifSending, setVerifSending] = useState(false);
+  const [verifToken, setVerifToken] = useState<string | null>(null);
+  const [verifMessage, setVerifMessage] = useState<string | null>(null);
+  const [verifError, setVerifError] = useState<string | null>(null);
+  const [verifLoading, setVerifLoading] = useState(false);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -54,6 +59,66 @@ export default function DashboardPage() {
     }
   };
 
+  const handleSendVerification = async () => {
+    setVerifMessage(null);
+    setVerifError(null);
+    setVerifToken(null);
+    setVerifSending(true);
+
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'}/auth/send-verification`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setVerifError(data.error || 'Failed to send verification');
+      } else {
+        setVerifToken(data.verificationToken);
+        setVerifMessage('Verification code generated! Click "Verify Now" to confirm your email.');
+      }
+    } catch (err: any) {
+      setVerifError(err.message || 'Server error');
+    } finally {
+      setVerifSending(false);
+    }
+  };
+
+  const handleVerifyEmail = async () => {
+    if (!verifToken) return;
+    setVerifLoading(true);
+    setVerifError(null);
+
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'}/auth/verify-email`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: verifToken }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setVerifError(data.error || 'Verification failed');
+      } else {
+        setVerifMessage('Email verified successfully!');
+        setVerifToken(null);
+        await refreshProfile();
+      }
+    } catch (err: any) {
+      setVerifError(err.message || 'Server error');
+    } finally {
+      setVerifLoading(false);
+    }
+  };
+
   const copyReferralCode = () => {
     if (!user) return;
     const url = `${window.location.origin}/register?ref=${user.referralCode}`;
@@ -79,6 +144,66 @@ export default function DashboardPage() {
         {/* Left Column (Stats and Referral Widget) */}
         <div className="lg:col-span-2 space-y-8">
           
+          {/* Email Verification Banner */}
+          {!user.isVerified && (
+            <div className="glass-panel-cyan p-5 rounded-3xl border border-amber-500/20 flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden">
+              <div className="flex items-start gap-3 flex-1">
+                <div className="w-9 h-9 rounded-xl bg-amber-950/40 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0">
+                  <Mail size={18} />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-sm font-bold text-zinc-100">Verify Your Email</h3>
+                  <p className="text-xs text-zinc-400 font-medium leading-relaxed">
+                    {verifMessage || 'Confirm your email address to unlock all platform features.'}
+                  </p>
+                  {verifToken && (
+                    <div className="mt-2 p-2 bg-zinc-950/60 border border-white/5 rounded-xl">
+                      <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-black block mb-1">
+                        Verification Token (demo)
+                      </span>
+                      <code className="text-[11px] font-mono text-cyan-400 break-all">{verifToken}</code>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {verifError && (
+                  <span className="text-[10px] text-red-400 font-semibold max-w-[160px] text-right">
+                    {verifError}
+                  </span>
+                )}
+                {verifToken ? (
+                  <button
+                    onClick={handleVerifyEmail}
+                    disabled={verifLoading}
+                    className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-black text-[10px] uppercase tracking-wider transition-all disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    {verifLoading ? (
+                      <div className="w-3.5 h-3.5 rounded-full border-2 border-black border-t-transparent animate-spin" />
+                    ) : (
+                      <ShieldCheck size={12} />
+                    )}
+                    Verify Now
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleSendVerification}
+                    disabled={verifSending}
+                    className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-black text-[10px] uppercase tracking-wider transition-all disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    {verifSending ? (
+                      <div className="w-3.5 h-3.5 rounded-full border-2 border-black border-t-transparent animate-spin" />
+                    ) : (
+                      <Mail size={12} />
+                    )}
+                    Send Verification
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Welcome Banner */}
           <div className="glass-panel p-8 rounded-3xl border border-cyan-500/10 flex flex-col sm:flex-row sm:items-center justify-between gap-6 relative overflow-hidden shadow-[0_0_20px_rgba(6,182,212,0.05)]">
             <div className="absolute top-0 right-0 w-32 h-32 rounded-full bg-cyan-500/5 blur-2xl pointer-events-none" />

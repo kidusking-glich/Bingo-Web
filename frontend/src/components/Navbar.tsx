@@ -4,7 +4,8 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '../context/AuthContext';
-import { Wallet, Users, LayoutDashboard, Trophy, LogOut, ShieldAlert, PlayCircle } from 'lucide-react';
+import { Wallet, Users, LayoutDashboard, Trophy, LogOut, ShieldAlert, PlayCircle, Settings } from 'lucide-react';
+import NotificationDropdown from './NotificationDropdown';
 
 export default function Navbar() {
   const { user, logout } = useAuth();
@@ -94,10 +95,19 @@ export default function Navbar() {
 
         {/* Action Panel */}
         <div className="flex items-center gap-4">
-          <div className="flex flex-col items-end hidden sm:flex">
+          <Link
+            href="/settings"
+            className="flex flex-col items-end hidden sm:group hover:cursor-pointer"
+          >
             <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-black">Logged In As</span>
-            <span className="text-xs font-bold text-zinc-300">{user.username}</span>
-          </div>
+            <span className="text-xs font-bold text-zinc-300 group-hover:text-cyan-400 transition-colors flex items-center gap-1.5">
+              {user.username}
+              <Settings size={12} className="opacity-0 group-hover:opacity-100 transition-all duration-300" />
+            </span>
+          </Link>
+
+          {/* Notifications Bell */}
+          <NotificationDropdown />
 
           {/* Balance Widget */}
           <div className="bg-gradient-to-r from-cyan-950/40 to-fuchsia-950/40 px-4 py-2 rounded-2xl border border-purple-500/20 flex items-center gap-2 shadow-[inset_0_0_10px_rgba(168,85,247,0.05)]">

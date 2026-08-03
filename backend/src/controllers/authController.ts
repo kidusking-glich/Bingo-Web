@@ -206,6 +206,42 @@ export const login = async (req: Request, res: Response) => {
   }
 };
 
+export const sendVerification = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (user.isVerified) {
+      return res.status(400).json({ error: 'Email is already verified' });
+    }
+
+    // Generate a fresh verification token
+    const verificationToken = Math.random().toString(36).substring(2, 15);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { verificationToken },
+    });
+
+    // In production this would send an email. We return the token for mock/demo flow.
+    res.json({
+      message: 'Verification email sent (mock: token returned for testing)',
+      verificationToken,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to send verification' });
+  }
+};
+
 export const verifyEmail = async (req: Request, res: Response) => {
   try {
     const { token } = req.body;
@@ -310,6 +346,104 @@ export const resetPassword = async (req: Request, res: Response) => {
   }
 };
 
+export const updateProfile = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { username, email, currentPassword, newPassword } = req.body;
+    const userId = req.user.id;
+
+    // Fetch current user data
+    const currentUser = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!currentUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const updates: any = {};
+
+    // --- Username change ---
+    if (username && username !== currentUser.username) {
+      const existing = await prisma.user.findUnique({
+        where: { username },
+      });
+      if (existing) {
+        return res.status(400).json({ error: 'Username is already taken' });
+      }
+      updates.username = username;
+    }
+
+    // --- Email change ---
+    if (email && email !== currentUser.email) {
+      const existing = await prisma.user.findUnique({
+        where: { email },
+      });
+      if (existing) {
+        return res.status(400).json({ error: 'Email is already in use' });
+      }
+      updates.email = email;
+      updates.isVerified = false;
+      updates.verificationToken = Math.random().toString(36).substring(2, 15);
+    }
+
+    // --- Password change ---
+    if (newPassword) {
+      if (!currentPassword) {
+        return res.status(400).json({ error: 'Current password is required to set a new password' });
+      }
+
+      const isMatch = await bcrypt.compare(currentPassword, currentUser.passwordHash);
+      if (!isMatch) {
+        return res.status(400).json({ error: 'Current password is incorrect' });
+      }
+
+      updates.passwordHash = await bcrypt.hash(newPassword, 10);
+    }
+
+    // If nothing to update
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No changes provided' });
+    }
+
+    // Apply updates
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: updates,
+    });
+
+    // Generate a new token if email or username changed (JWT payload includes them)
+    const newToken = jwt.sign(
+      {
+        id: updatedUser.id,
+        email: updatedUser.email,
+        username: updatedUser.username,
+        role: updatedUser.role,
+      },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      message: 'Profile updated successfully',
+      token: newToken,
+      user: {
+        id: updatedUser.id,
+        email: updatedUser.email,
+        username: updatedUser.username,
+        role: updatedUser.role,
+        referralCode: updatedUser.referralCode,
+        isVerified: updatedUser.isVerified,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to update profile' });
+  }
+};
+
 export const getProfile = async (req: AuthRequest, res: Response) => {
   try {
     if (!req.user) {
@@ -335,6 +469,7 @@ export const getProfile = async (req: AuthRequest, res: Response) => {
         role: user.role,
         referralCode: user.referralCode,
         isVerified: user.isVerified,
+        createdAt: user.createdAt,
         wallet: user.wallet,
       },
     });

@@ -10,6 +10,7 @@ export interface UserProfile {
   role: 'USER' | 'ADMIN';
   referralCode: string;
   isVerified: boolean;
+  createdAt: string;
   wallet: {
     id: string;
     balance: string;

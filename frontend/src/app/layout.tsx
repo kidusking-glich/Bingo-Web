@@ -3,6 +3,7 @@ import { Outfit } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from '../context/AuthContext';
 import { SocketProvider } from '../context/SocketContext';
+import { NotificationProvider } from '../context/NotificationContext';
 
 const outfit = Outfit({
   subsets: ['latin'],
@@ -25,7 +26,9 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col bg-[#03000a] text-zinc-100 neon-grid selection:bg-cyan-500 selection:text-black">
         <AuthProvider>
           <SocketProvider>
-            {children}
+            <NotificationProvider>
+              {children}
+            </NotificationProvider>
           </SocketProvider>
         </AuthProvider>
       </body>
