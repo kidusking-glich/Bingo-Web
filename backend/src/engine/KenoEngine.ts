@@ -49,6 +49,9 @@ interface KenoPlayer {
   userId: string;
   username: string;
   socketId?: string;
+  // All socket connections belonging to this user in this room. The player
+  // entry only goes away when the LAST of their sockets leaves.
+  socketIds: string[];
   spots: number[];
   matched: number;
   payout: number;
@@ -70,6 +73,10 @@ interface KenoRoomState {
 export class KenoEngine {
   private io: Server;
   private rooms: Map<string, KenoRoomState> = new Map();
+
+  // Tracks in-flight joins per room:user so concurrent join events can never
+  // push the same player twice (parity with BingoEngine).
+  private pendingJoins: Map<string, Promise<void>> = new Map();
 
   constructor(io: Server) {
     this.io = io;
@@ -202,13 +209,49 @@ export class KenoEngine {
       throw new Error('A round is in progress. Please try again in a few seconds.');
     }
 
+    const joinKey = `${roomId}:${userId}`;
+
+    // Already in the room — just refresh the socket connection
     const exists = room.players.find((p) => p.userId === userId);
     if (exists) {
       exists.socketId = socketId;
+      if (!exists.socketIds.includes(socketId)) exists.socketIds.push(socketId);
       this.broadcastRoomUpdate(roomId);
       return;
     }
 
+    // A join for this user is already in flight (double-emit, fast rejoin): wait
+    // for it to settle instead of starting a second one so the player is pushed
+    // exactly once.
+    const inFlight = this.pendingJoins.get(joinKey);
+    if (inFlight) {
+      await inFlight; // propagates success or failure of the in-flight join
+      const joined = room.players.find((p) => p.userId === userId);
+      if (joined) {
+        joined.socketId = socketId;
+        if (!joined.socketIds.includes(socketId)) joined.socketIds.push(socketId);
+        this.broadcastRoomUpdate(roomId);
+      }
+      return;
+    }
+
+    const joinPromise = this.performJoin(room, roomId, userId, username, socketId);
+    this.pendingJoins.set(joinKey, joinPromise);
+    try {
+      await joinPromise;
+    } finally {
+      this.pendingJoins.delete(joinKey);
+    }
+  }
+
+  /** Executes the actual join (player push, broadcasts). Guarded by {@link pendingJoins}. */
+  private async performJoin(
+    room: KenoRoomState,
+    roomId: string,
+    userId: string,
+    username: string,
+    socketId: string
+  ) {
     const dbRoom = await prisma.bingoRoom.findUnique({ where: { id: roomId } });
     if (!dbRoom) throw new Error('Room not found');
 
@@ -217,6 +260,7 @@ export class KenoEngine {
       userId,
       username,
       socketId,
+      socketIds: [socketId],
       spots: [],
       matched: 0,
       payout: 0,
@@ -226,20 +270,35 @@ export class KenoEngine {
     this.startCountdownIfNeeded(roomId);
   }
 
-  public leaveRoom(roomId: string, userId: string) {
+  public leaveRoom(roomId: string, userId: string, socketId?: string) {
     const room = this.rooms.get(roomId);
     if (!room) return;
 
     const idx = room.players.findIndex((p) => p.userId === userId);
-    if (idx !== -1) {
-      room.players.splice(idx, 1);
-      this.broadcastRoomUpdate(roomId);
+    if (idx === -1) return;
 
-      // Never abort a round that is already drawing: let it finish so the
-      // persisted tickets are settled fairly and the game row closes cleanly.
-      if (room.players.length === 0 && room.state !== 'PLAYING') {
-        this.resetRoom(roomId);
+    const player = room.players[idx];
+
+    // A socketId was given but this user has no membership for it — nothing to drop
+    if (socketId && !player.socketIds.includes(socketId)) return;
+
+    // Other sockets of this user are still in the room — just drop this one
+    if (socketId && player.socketIds.includes(socketId)) {
+      player.socketIds = player.socketIds.filter((id) => id !== socketId);
+      if (player.socketId === socketId) player.socketId = player.socketIds[0];
+      if (player.socketIds.length > 0) {
+        this.broadcastRoomUpdate(roomId);
+        return;
       }
+    }
+
+    room.players.splice(idx, 1);
+    this.broadcastRoomUpdate(roomId);
+
+    // Never abort a round that is already drawing: let it finish so the
+    // persisted tickets are settled fairly and the game row closes cleanly.
+    if (room.players.length === 0 && room.state !== 'PLAYING') {
+      this.resetRoom(roomId);
     }
   }
 
@@ -262,9 +321,10 @@ export class KenoEngine {
 
     player.spots = cleaned;
 
-    if (player.socketId) {
-      this.io.to(player.socketId).emit('keno_picks_update', { spots: player.spots });
-    }
+    // All sockets of this user see the same picks (multi-tab safe)
+    player.socketIds.forEach((sid) => {
+      this.io.to(sid).emit('keno_picks_update', { spots: player.spots });
+    });
   }
 
   private resetRoom(roomId: string) {

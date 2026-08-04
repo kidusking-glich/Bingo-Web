@@ -12,6 +12,7 @@ export default function BingoRoomPage() {
   const router = useRouter();
 
   const {
+    connected,
     joinRoom,
     leaveRoom,
     gameState,
@@ -41,17 +42,32 @@ export default function BingoRoomPage() {
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  // Guards the automatic first-card selection so it runs at most once per room
+  const autoSelectedRef = useRef(false);
+  // Tracks the room already joined on this page so profile refreshes (which
+  // recreate the user object) don't trigger a leave/rejoin churn.
+  const joinedRoomRef = useRef<string | null>(null);
 
-  // 1. Join Room on Mount
+  const userId = user?.id;
+
+  // 1. Join Room on Mount (waits for the socket to connect before joining)
   useEffect(() => {
-    if (!loading && !user) {
+    if (!loading && !userId) {
       router.push('/login');
       return;
     }
 
-    if (user && roomId) {
+    if (userId && roomId && connected) {
+      // Already joined this room (e.g. user was refreshed after the join) — stay
+      if (joinedRoomRef.current === roomId) return;
+
+      joinedRoomRef.current = roomId;
+      // Fresh join: allow the automatic first-card selection to run once
+      autoSelectedRef.current = false;
+
       joinRoom(roomId).then((res) => {
         if (!res.success) {
+          joinedRoomRef.current = null;
           setJoinError(res.error || 'Failed to enter room');
         } else {
           setJoining(false);
@@ -60,26 +76,35 @@ export default function BingoRoomPage() {
     }
 
     return () => {
+      joinedRoomRef.current = null;
       leaveRoom();
     };
-  }, [user, roomId]);
+  }, [loading, userId, roomId, connected]);
 
   // 2. Auto Scroll Chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
 
-  // 2.5 Auto-select the first card option by default (server also falls back to it)
+  // 2.5 Auto-select the first card option by default (server also falls back to it).
+  // Runs at most once per room mount and only once the join has completed, so it
+  // never emits select_card against stale options or an inactive room membership.
   useEffect(() => {
-    if (cardOptions.length > 0 && gameState === 'WAITING') {
+    if (autoSelectedRef.current) return;
+    if (cardOptions.length > 0 && gameState === 'WAITING' && !joining) {
       const current = cardOptions.find((c) => c.id === selectedCardId);
       if (!current) {
         const first = cardOptions[0];
         setSelectedCardId(first.id);
-        selectCard(first.id);
+        selectCard(first.id).then((res) => {
+          // Only arm once the server accepts the pick. If it fails (e.g. a
+          // dev StrictMode remount regenerated the options out from under us),
+          // stay disarmed so the next card_options event retries with fresh ids.
+          if (res.success) autoSelectedRef.current = true;
+        });
       }
     }
-  }, [cardOptions]);
+  }, [cardOptions, gameState, joining, selectedCardId, selectCard]);
 
   // 3. Auto Daub Logic
   useEffect(() => {

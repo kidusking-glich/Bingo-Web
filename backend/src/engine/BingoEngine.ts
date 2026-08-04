@@ -59,6 +59,10 @@ interface RoomState {
     username: string;
     isBot: boolean;
     socketId?: string;
+    // All socket connections belonging to this user in this room. The player
+    // entry only goes away when the LAST of their sockets leaves, so one tab
+    // closing can never eject a co-located tab.
+    socketIds: string[];
     cardOptions: {
       id: string;
       grid: number[][];
@@ -76,6 +80,10 @@ interface RoomState {
 export class BingoEngine {
   private io: Server;
   private rooms: Map<string, RoomState> = new Map();
+
+  // Tracks in-flight joins per room:user so concurrent join events (e.g. a
+  // double-emit or a fast reconnect) can never push the same player twice.
+  private pendingJoins: Map<string, Promise<void>> = new Map();
 
   constructor(io: Server) {
     this.io = io;
@@ -152,18 +160,59 @@ export class BingoEngine {
     const room = this.rooms.get(roomId);
     if (!room) throw new Error('Room not found');
 
-    // Check if user is already in room
+    const joinKey = `${roomId}:${userId}`;
+
+    // Already in the room — just refresh the socket connection and re-send the picker
     const exists = room.players.find((p) => p.userId === userId);
     if (exists) {
       exists.socketId = socketId;
-      // Re-send their card options so the picker can be restored (only while waiting)
+      if (!exists.socketIds.includes(socketId)) exists.socketIds.push(socketId);
       if (room.state === 'WAITING' && exists.cardOptions.length > 0) {
-        this.io.to(socketId).emit('card_options', { cards: exists.cardOptions });
+        // Every socket of this user sees the same options (multi-tab safe)
+        exists.socketIds.forEach((sid) => this.io.to(sid).emit('card_options', { cards: exists.cardOptions }));
       }
       this.broadcastRoomUpdate(roomId);
       return;
     }
 
+    // A join for this user is already in flight (double-emit, fast rejoin): wait
+    // for it to settle instead of starting a second one. This guarantees the
+    // player is pushed exactly once — no duplicate entries and no double fee.
+    const inFlight = this.pendingJoins.get(joinKey);
+    if (inFlight) {
+      await inFlight; // propagates success or failure of the in-flight join
+      const joined = room.players.find((p) => p.userId === userId);
+      if (joined) {
+        joined.socketId = socketId;
+        if (!joined.socketIds.includes(socketId)) joined.socketIds.push(socketId);
+        if (room.state === 'WAITING' && joined.cardOptions.length > 0) {
+          joined.socketIds.forEach((sid) => this.io.to(sid).emit('card_options', { cards: joined.cardOptions }));
+        }
+        this.broadcastRoomUpdate(roomId);
+      }
+      return;
+    }
+
+    const joinPromise = this.performJoin(room, roomId, userId, username, socketId);
+    this.pendingJoins.set(joinKey, joinPromise);
+    try {
+      await joinPromise;
+    } finally {
+      this.pendingJoins.delete(joinKey);
+    }
+  }
+
+  /**
+   * Executes the actual join (fee deduction, player push, broadcasts).
+   * Guarded by {@link pendingJoins} so it runs at most once per room:user.
+   */
+  private async performJoin(
+    room: RoomState,
+    roomId: string,
+    userId: string,
+    username: string,
+    socketId: string
+  ) {
     // Load Room settings
     const dbRoom = await prisma.bingoRoom.findUnique({ where: { id: roomId } });
     if (!dbRoom) throw new Error('Room not found');
@@ -245,6 +294,7 @@ export class BingoEngine {
       username,
       isBot: false,
       socketId,
+      socketIds: [socketId],
       cardOptions,
       cards: [], // chosen card is filled in once the user picks
     });
@@ -263,29 +313,46 @@ export class BingoEngine {
   }
 
   /**
-   * Leaves a room
+   * Leaves a room. When `socketId` is given, only that socket is removed from
+   * the player's membership; the player stays until their last socket leaves
+   * (so a multi-tab user isn't ejected when one tab closes).
    */
-  public leaveRoom(roomId: string, userId: string) {
+  public leaveRoom(roomId: string, userId: string, socketId?: string) {
     const room = this.rooms.get(roomId);
     if (!room) return;
 
     const idx = room.players.findIndex((p) => p.userId === userId);
-    if (idx !== -1) {
-      const username = room.players[idx].username;
-      room.players.splice(idx, 1);
-      
-      this.io.to(roomId).emit('chat_message', {
-        username: 'System',
-        message: `${username} left the lobby.`,
-        createdAt: new Date(),
-      });
+    if (idx === -1) return;
 
-      this.broadcastRoomUpdate(roomId);
+    const player = room.players[idx];
 
-      // If room is empty, reset state to WAITING and clear timers
-      if (room.players.filter((p) => !p.isBot).length === 0) {
-        this.resetRoom(roomId);
+    // A socketId was given but this user has no membership for it — nothing to drop
+    if (socketId && !player.socketIds.includes(socketId)) return;
+
+    // Other sockets of this user are still in the room — just drop this one
+    if (socketId && player.socketIds.includes(socketId)) {
+      player.socketIds = player.socketIds.filter((id) => id !== socketId);
+      if (player.socketId === socketId) player.socketId = player.socketIds[0];
+      if (player.socketIds.length > 0) {
+        this.broadcastRoomUpdate(roomId);
+        return;
       }
+    }
+
+    const username = player.username;
+    room.players.splice(idx, 1);
+
+    this.io.to(roomId).emit('chat_message', {
+      username: 'System',
+      message: `${username} left the lobby.`,
+      createdAt: new Date(),
+    });
+
+    this.broadcastRoomUpdate(roomId);
+
+    // If room is empty, reset state to WAITING and clear timers
+    if (room.players.filter((p) => !p.isBot).length === 0) {
+      this.resetRoom(roomId);
     }
   }
 
@@ -349,6 +416,7 @@ export class BingoEngine {
         userId: botId,
         username: botName,
         isBot: true,
+        socketIds: [],
         cardOptions: [],
         cards: [{
           id: 'card-' + Math.random().toString(36).substring(2, 9),
@@ -570,9 +638,10 @@ export class BingoEngine {
     player.cardOptions = generateCardOptions();
     player.cards = [];
 
-    if (player.socketId) {
-      this.io.to(player.socketId).emit('card_options', { cards: player.cardOptions });
-    }
+    // All sockets of this user see the fresh options (multi-tab safe)
+    player.socketIds.forEach((sid) => {
+      this.io.to(sid).emit('card_options', { cards: player.cardOptions });
+    });
   }
 
   /**

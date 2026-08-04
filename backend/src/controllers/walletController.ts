@@ -77,24 +77,25 @@ export const withdrawRequest = async (req: AuthRequest, res: Response) => {
         },
       });
 
-      // Create transaction log (marked as PENDING)
-      const txn = await tx.transaction.create({
-        data: {
-          userId: req.user!.id,
-          type: 'WITHDRAWAL',
-          amount,
-          status: 'PENDING',
-          description: `Withdrawal request to address ${address}`,
-        },
-      });
-
-      // Create withdrawal request
+      // Create the withdrawal request first so the ledger entry can be linked to it
       const withdraw = await tx.withdrawalRequest.create({
         data: {
           userId: req.user!.id,
           amount,
           address,
           status: 'PENDING',
+        },
+      });
+
+      // Create transaction log (marked as PENDING), tied to the request
+      await tx.transaction.create({
+        data: {
+          userId: req.user!.id,
+          type: 'WITHDRAWAL',
+          amount,
+          status: 'PENDING',
+          description: `Withdrawal request to address ${address}`,
+          withdrawalRequestId: withdraw.id,
         },
       });
 

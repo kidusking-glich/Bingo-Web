@@ -87,14 +87,16 @@ model Wallet {
 }
 
 model Transaction {
-  id          String            @id @default(uuid())
-  userId      String
-  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type        TransactionType
-  amount      Decimal
-  status      TransactionStatus @default(COMPLETED)
-  description String?
-  createdAt   DateTime          @default(now())
+  id                  String             @id @default(uuid())
+  userId              String
+  user                User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type                TransactionType
+  amount              Decimal
+  status              TransactionStatus  @default(COMPLETED)
+  description         String?
+  withdrawalRequestId String?            @unique
+  withdrawalRequest   WithdrawalRequest? @relation(fields: [withdrawalRequestId], references: [id], onDelete: SetNull)
+  createdAt           DateTime           @default(now())
 }
 
 model BingoRoom {
@@ -202,6 +204,8 @@ model WithdrawalRequest {
   status      TransactionStatus @default(PENDING)
   approvedAt  DateTime?
   createdAt   DateTime          @default(now())
+
+  transaction Transaction?
 }
 
 model DepositRequest {

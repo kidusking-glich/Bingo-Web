@@ -831,8 +831,10 @@ function KenoHistoryPanel({ roomId, currentUserId }: { roomId: string; currentUs
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5 font-semibold text-zinc-300">
-                    {round.tickets.map((t) => (
-                      <tr key={t.userId} className="hover:bg-white/1">
+                    {round.tickets.map((t, i) => (
+                      // A user can appear more than once per round only in legacy
+                      // data (pre-race-fix), so the key must be unique per row.
+                      <tr key={`${t.userId}-${i}`} className="hover:bg-white/1">
                         <td className="py-2.5">
                           <span className="flex items-center gap-2">
                             <span className={t.userId === currentUserId ? 'text-fuchsia-400 font-black' : 'text-zinc-200'}>

@@ -52,19 +52,22 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
         // Leave a Keno room if the user is currently in one
         if (activeKenoRoomId) {
           socket.leave(activeKenoRoomId);
-          kenoEngine.leaveRoom(activeKenoRoomId, user.id);
+          kenoEngine.leaveRoom(activeKenoRoomId, user.id, socket.id);
           activeKenoRoomId = null;
         }
 
         if (activeRoomId) {
           socket.leave(activeRoomId);
-          engine.leaveRoom(activeRoomId, user.id);
+          engine.leaveRoom(activeRoomId, user.id, socket.id);
         }
 
         socket.join(roomId);
-        activeRoomId = roomId;
 
         await engine.joinRoom(roomId, user.id, user.username, socket.id);
+        // Register the room only after the join fully succeeds so a disconnect
+        // during the async join gap can't eject a half-joined player (which
+        // would let a rejoin regenerate options out from under another socket).
+        activeRoomId = roomId;
         if (callback) callback({ success: true });
       } catch (err: any) {
         console.error(`Error joining room: ${err.message}`);
@@ -76,7 +79,7 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
     socket.on('leave_room', () => {
       if (activeRoomId) {
         socket.leave(activeRoomId);
-        engine.leaveRoom(activeRoomId, user.id);
+        engine.leaveRoom(activeRoomId, user.id, socket.id);
         activeRoomId = null;
       }
     });
@@ -87,19 +90,20 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
         // Leave a Bingo room if the user is currently in one
         if (activeRoomId) {
           socket.leave(activeRoomId);
-          engine.leaveRoom(activeRoomId, user.id);
+          engine.leaveRoom(activeRoomId, user.id, socket.id);
           activeRoomId = null;
         }
 
         if (activeKenoRoomId) {
           socket.leave(activeKenoRoomId);
-          kenoEngine.leaveRoom(activeKenoRoomId, user.id);
+          kenoEngine.leaveRoom(activeKenoRoomId, user.id, socket.id);
         }
 
         socket.join(roomId);
-        activeKenoRoomId = roomId;
 
         await kenoEngine.joinRoom(roomId, user.id, user.username, socket.id);
+        // Register the room only after the join fully succeeds (see join_room).
+        activeKenoRoomId = roomId;
         if (callback) callback({ success: true });
       } catch (err: any) {
         console.error(`Error joining Keno room: ${err.message}`);
@@ -110,7 +114,7 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
     socket.on('keno_leave_room', () => {
       if (activeKenoRoomId) {
         socket.leave(activeKenoRoomId);
-        kenoEngine.leaveRoom(activeKenoRoomId, user.id);
+        kenoEngine.leaveRoom(activeKenoRoomId, user.id, socket.id);
         activeKenoRoomId = null;
       }
     });
@@ -200,10 +204,10 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
     socket.on('disconnect', () => {
       console.log(`Socket Disconnected: User ${user.username}`);
       if (activeRoomId) {
-        engine.leaveRoom(activeRoomId, user.id);
+        engine.leaveRoom(activeRoomId, user.id, socket.id);
       }
       if (activeKenoRoomId) {
-        kenoEngine.leaveRoom(activeKenoRoomId, user.id);
+        kenoEngine.leaveRoom(activeKenoRoomId, user.id, socket.id);
       }
     });
   });

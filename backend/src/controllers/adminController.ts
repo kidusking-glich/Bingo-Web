@@ -1,7 +1,38 @@
 import { Response } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../db';
 import { AuthRequest } from '../middlewares/auth';
 import { DEFAULT_SETTINGS } from '../utils/settings';
+
+/**
+ * Finds the ledger entry for a withdrawal request. New entries are linked via
+ * withdrawalRequestId; older entries are matched by userId/amount/address and
+ * get permanently linked to the request once found.
+ */
+const findWithdrawalTransaction = async (
+  tx: Prisma.TransactionClient,
+  requestId: string,
+  request: { userId: string; amount: Prisma.Decimal; address: string }
+) => {
+  let transaction = await tx.transaction.findUnique({
+    where: { withdrawalRequestId: requestId },
+  });
+
+  if (!transaction) {
+    transaction = await tx.transaction.findFirst({
+      where: {
+        userId: request.userId,
+        type: 'WITHDRAWAL',
+        amount: request.amount.toNumber(),
+        status: 'PENDING',
+        description: { contains: request.address },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  return transaction;
+};
 
 export const getSettings = async (req: AuthRequest, res: Response) => {
   try {
@@ -284,20 +315,14 @@ export const approveWithdrawal = async (req: AuthRequest, res: Response) => {
         },
       });
 
-      // Update the transaction log matching the withdrawal details
-      const transaction = await tx.transaction.findFirst({
-        where: {
-          userId: request.userId,
-          type: 'WITHDRAWAL',
-          amount: -request.amount.toNumber(), // negative representation if stored as negative, wait, let's verify: we stored it as positive or negative? In walletController we stored it as positive amount. Let's check matching description or amount.
-          status: 'PENDING',
-        },
-      });
+      // Update the transaction log matching the withdrawal details, linking
+      // legacy entries to this request in the process.
+      const transaction = await findWithdrawalTransaction(tx, requestId, request);
 
       if (transaction) {
         await tx.transaction.update({
           where: { id: transaction.id },
-          data: { status: 'COMPLETED' },
+          data: { status: 'COMPLETED', withdrawalRequestId: requestId },
         });
       } else {
         // Fallback create transaction log if not found
@@ -305,9 +330,10 @@ export const approveWithdrawal = async (req: AuthRequest, res: Response) => {
           data: {
             userId: request.userId,
             type: 'WITHDRAWAL',
-            amount: -request.amount.toNumber(),
+            amount: request.amount.toNumber(),
             status: 'COMPLETED',
             description: `Approved withdrawal to ${request.address}`,
+            withdrawalRequestId: requestId,
           },
         });
       }
@@ -366,20 +392,17 @@ export const rejectWithdrawal = async (req: AuthRequest, res: Response) => {
         },
       });
 
-      // 3. Mark transaction as REJECTED
-      const transaction = await tx.transaction.findFirst({
-        where: {
-          userId: request.userId,
-          type: 'WITHDRAWAL',
-          amount: request.amount, // stored in walletController as amount (positive)
-          status: 'PENDING',
-        },
-      });
+      // 3. Mark transaction as REJECTED, linking legacy entries to this request
+      const transaction = await findWithdrawalTransaction(tx, requestId, request);
 
       if (transaction) {
         await tx.transaction.update({
           where: { id: transaction.id },
-          data: { status: 'REJECTED', description: transaction.description + ' (Rejected by Admin - Refunded)' },
+          data: {
+            status: 'REJECTED',
+            description: transaction.description + ' (Rejected by Admin - Refunded)',
+            withdrawalRequestId: requestId,
+          },
         });
       }
 
