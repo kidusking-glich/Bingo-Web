@@ -45,6 +45,57 @@ export const getKenoMultiplier = (spots: number, hits: number): number => {
   return row[hits] ?? 0;
 };
 
+/** Binomial coefficient C(n, r) with out-of-range guards. */
+const combination = (n: number, r: number): number => {
+  if (r < 0 || r > n) return 0;
+  r = Math.min(r, n - r);
+  let result = 1;
+  for (let i = 0; i < r; i++) {
+    result = (result * (n - i)) / (i + 1);
+  }
+  return result;
+};
+
+// Note: C(80, 20) (~3.5e18) exceeds Number.MAX_SAFE_INTEGER, so these
+// coefficients lose exact integer precision. They are only ever combined into
+// ratios (probability = C(k,h) * C(80-k, d-h) / C(80, d)), which keeps the
+// relative error ~1e-13 — far below what the payout math cares about.
+
+/**
+ * Expected return-to-player of the base paytable for a k-spot ticket when
+ * `drawSize` of 80 numbers are drawn. Returns a fraction (0.75 = 75%).
+ */
+export const getBaseKenoRtp = (spots: number, drawSize = 20): number => {
+  const row = KENO_PAYTABLE[spots];
+  if (!row || spots <= 0 || drawSize <= 0) return 0;
+
+  const totalCombos = combination(80, drawSize);
+  let expected = 0;
+  for (let hits = 0; hits <= spots; hits++) {
+    const prob = (combination(spots, hits) * combination(80 - spots, drawSize - hits)) / totalCombos;
+    expected += prob * (row[hits] ?? 0);
+  }
+  return expected;
+};
+
+/**
+ * Scales a paytable multiplier so the ticket's expected payout rate matches the
+ * admin target RTP (rtp_percentage, e.g. 90 = 90%). Falls back to the base
+ * paytable when the target or the base RTP is invalid (<= 0).
+ */
+export const getRtpScaledMultiplier = (
+  spots: number,
+  hits: number,
+  drawSize: number,
+  targetRtp: number
+): number => {
+  const base = getBaseKenoRtp(spots, drawSize);
+  if (!(base > 0) || !(targetRtp > 0)) return getKenoMultiplier(spots, hits);
+
+  const factor = Math.min(targetRtp, 100) / 100 / base;
+  return Math.round(getKenoMultiplier(spots, hits) * factor * 100) / 100;
+};
+
 interface KenoPlayer {
   userId: string;
   username: string;
@@ -532,11 +583,18 @@ export class KenoEngine {
     const drawnNumbers = [...room.drawnNumbers];
 
     const tickets = await prisma.kenoTicket.findMany({ where: { gameId } });
+    const targetRtp = await getSettingNumber('rtp_percentage');
     const results: { userId: string; matched: number; payout: number }[] = [];
 
     for (const ticket of tickets) {
       const matched = ticket.spots.filter((n) => drawnNumbers.includes(n)).length;
-      const multiplier = getKenoMultiplier(ticket.spots.length, matched);
+      // Scale the paytable toward the admin target RTP (rtp_percentage)
+      const multiplier = getRtpScaledMultiplier(
+        ticket.spots.length,
+        matched,
+        drawnNumbers.length,
+        targetRtp
+      );
       const payout = multiplier * entryFee;
 
       await prisma.kenoTicket.update({

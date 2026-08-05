@@ -722,6 +722,9 @@ export class BingoEngine {
 
     const prizePool = dbRoom.prizePool.toNumber();
     let winnerName = 'No One (Draw)';
+    // Jackpot bonus awarded to a human winner when the admin-configured
+    // jackpot_chance% roll hits (default 0 = no jackpot).
+    let jackpot = 0;
 
     if (winnerId && winningCardId) {
       const winnerPlayer = room.players.find((p) => p.userId === winnerId);
@@ -730,13 +733,24 @@ export class BingoEngine {
 
         // Perform payouts if the winner is a real player
         if (!winnerPlayer.isBot) {
+          // Roll for the jackpot: chance is the win-rate-style percentage
+          // setting, amount is the fixed jackpot_amount setting.
+          const jackpotChance = await getSettingNumber('jackpot_chance');
+          const jackpotAmount = await getSettingNumber('jackpot_amount');
+          // A negative/zero jackpot setting must never shrink the winnings
+          if (Math.random() * 100 < jackpotChance && jackpotAmount > 0) {
+            jackpot = jackpotAmount;
+          }
+
+          const totalPayout = prizePool + jackpot;
+
           await prisma.$transaction(async (tx) => {
             // Update wallet
             await tx.wallet.update({
               where: { userId: winnerId },
               data: {
-                balance: { increment: prizePool },
-                totalWinnings: { increment: prizePool },
+                balance: { increment: totalPayout },
+                totalWinnings: { increment: totalPayout },
               },
             });
 
@@ -745,8 +759,11 @@ export class BingoEngine {
               data: {
                 userId: winnerId,
                 type: 'GAME_WIN',
-                amount: prizePool,
-                description: `Won game in room ${dbRoom.name}`,
+                amount: totalPayout,
+                description:
+                  jackpot > 0
+                    ? `Won game in room ${dbRoom.name} including jackpot bonus`
+                    : `Won game in room ${dbRoom.name}`,
               },
             });
 
@@ -755,7 +772,10 @@ export class BingoEngine {
               data: {
                 userId: winnerId,
                 title: 'You Won BINGO!',
-                message: `Congratulations! You won the prize pool of $${prizePool.toFixed(2)} in ${dbRoom.name}!`,
+                message:
+                  jackpot > 0
+                    ? `Congratulations! You won the prize pool of $${prizePool.toFixed(2)} plus a $${jackpot.toFixed(2)} JACKPOT BONUS in ${dbRoom.name}!`
+                    : `Congratulations! You won the prize pool of $${prizePool.toFixed(2)} in ${dbRoom.name}!`,
               },
             });
           });
@@ -786,6 +806,7 @@ export class BingoEngine {
       winnerName,
       winningCardId,
       prizePool,
+      jackpot,
     });
 
     // Reset room back to WAITING lobby state after a short delay

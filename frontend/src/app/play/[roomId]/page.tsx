@@ -764,9 +764,16 @@ export default function BingoRoomPage() {
               </p>
             </div>
 
-            <div className="p-4 bg-zinc-950/60 border border-white/5 rounded-2xl inline-block">
+            <div className="p-4 bg-zinc-950/60 border border-white/5 rounded-2xl inline-block space-y-2">
               <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-black block">Winnings Prize Pool</span>
-              <span className="text-2xl font-black text-cyan-400 block tracking-wider mt-1">${winnerInfo.prizePool.toFixed(2)}</span>
+              <span className="text-2xl font-black text-cyan-400 block tracking-wider">${winnerInfo.prizePool.toFixed(2)}</span>
+
+              {winnerInfo.jackpot > 0 && (
+                <div className="pt-2 mt-2 border-t border-amber-500/20">
+                  <span className="text-[10px] text-amber-500 uppercase tracking-widest font-black block">🎰 Jackpot Bonus</span>
+                  <span className="text-lg font-black text-amber-400 block tracking-wider mt-0.5 animate-pulse">+${winnerInfo.jackpot.toFixed(2)}</span>
+                </div>
+              )}
             </div>
 
             <div className="text-xs text-zinc-500 font-bold pt-4 border-t border-white/5">

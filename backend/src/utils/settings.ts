@@ -9,6 +9,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   bot_difficulty: '1',
   number_calling_speed: '4', // seconds per ball call
   jackpot_chance: '5.00', // 5% chance of jackpot addition
+  jackpot_amount: '100.00', // fixed $ jackpot bonus awarded when the chance roll hits
   keno_max_spots: '10', // max spots a player can pick in Keno
   keno_draw_size: '20', // how many numbers are drawn per Keno round
 };

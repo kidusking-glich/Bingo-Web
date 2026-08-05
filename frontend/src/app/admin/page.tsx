@@ -15,6 +15,7 @@ interface AdminSettings {
   bot_difficulty: string;
   number_calling_speed: string;
   jackpot_chance: string;
+  jackpot_amount: string;
   keno_max_spots: string;
   keno_draw_size: string;
 }
@@ -101,6 +102,7 @@ export default function AdminPanelPage() {
     bot_difficulty: '1',
     number_calling_speed: '4',
     jackpot_chance: '5.00',
+    jackpot_amount: '100.00',
     keno_max_spots: '10',
     keno_draw_size: '20',
   });
@@ -424,6 +426,20 @@ export default function AdminPanelPage() {
                       value={parseFloat(settings.jackpot_chance)}
                       onChange={(e) => setSettings({ ...settings, jackpot_chance: e.target.value })}
                       className="w-full h-1 bg-zinc-900 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                    />
+                  </div>
+
+                  {/* Jackpot amount */}
+                  <div className="space-y-1.5">
+                    <label className="text-[9px] text-zinc-500 uppercase tracking-widest font-black">Jackpot Amount ($)</label>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      required
+                      value={settings.jackpot_amount}
+                      onChange={(e) => setSettings({ ...settings, jackpot_amount: e.target.value })}
+                      className="w-full px-4 py-3 bg-zinc-950 border border-white/5 rounded-2xl text-sm outline-none text-zinc-200"
                     />
                   </div>
                 </div>

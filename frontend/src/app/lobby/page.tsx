@@ -17,6 +17,8 @@ interface Room {
   playerCount: number;
   state: string;
   countdown: number;
+  jackpotAmount?: number;
+  jackpotChance?: number;
 }
 
 type GameFilter = 'ALL' | 'BINGO' | 'KENO';
@@ -169,6 +171,12 @@ export default function LobbyPage() {
                           }`}>
                             {room.type} ROOM
                           </span>
+                          {!isKeno && (room.jackpotAmount ?? 0) > 0 && (
+                            <span className="inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full font-black tracking-wider uppercase bg-amber-950/50 border border-amber-500/30 text-amber-400 animate-pulse-glow">
+                              <Coins size={9} />
+                              Jackpot ${(room.jackpotAmount ?? 0).toFixed(2)} · {(room.jackpotChance ?? 0).toFixed(0)}% chance
+                            </span>
+                          )}
                         </div>
                       </div>
                       

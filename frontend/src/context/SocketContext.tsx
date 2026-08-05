@@ -44,7 +44,7 @@ interface SocketContextType {
   myCards: Card[];
   cardOptions: Card[];
   chatMessages: ChatMessage[];
-  winnerInfo: { winnerId: string; winnerName: string; prizePool: number } | null;
+  winnerInfo: { winnerId: string; winnerName: string; prizePool: number; jackpot: number } | null;
   joinRoom: (roomId: string) => Promise<{ success: boolean; error?: string }>;
   leaveRoom: () => void;
   selectCard: (cardId: string) => Promise<{ success: boolean; error?: string }>;
@@ -224,6 +224,7 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
         winnerId: data.winnerId,
         winnerName: data.winnerName,
         prizePool: data.prizePool,
+        jackpot: data.jackpot || 0,
       });
       // Refresh profile balance since game payout changes balances
       refreshProfile();

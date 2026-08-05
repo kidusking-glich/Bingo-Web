@@ -8,6 +8,7 @@ import bcrypt from 'bcryptjs';
 dotenv.config();
 
 import prisma from './db';
+import { getSettingNumber } from './utils/settings';
 import { rateLimiter } from './middlewares/rateLimiter';
 import { authenticateJWT, requireAdmin } from './middlewares/auth';
 import {
@@ -118,6 +119,9 @@ app.get('/api/rooms', async (req, res) => {
     // Merge real-time counts from the running engines (Bingo vs Keno)
     const activeStats = engine.getRoomsStatus();
     const activeKenoStats = kenoEngine.getRoomsStatus();
+    // Live jackpot info from the admin settings (falls back to defaults)
+    const jackpotAmount = await getSettingNumber('jackpot_amount');
+    const jackpotChance = await getSettingNumber('jackpot_chance');
     const roomsWithStats = rooms.map((room) => {
       const stats = (room.game === 'KENO' ? activeKenoStats : activeStats).find(
         (s) => s.roomId === room.id
@@ -127,6 +131,8 @@ app.get('/api/rooms', async (req, res) => {
         state: stats?.state || 'WAITING',
         playerCount: stats?.playerCount || 0,
         countdown: stats?.countdown || 0,
+        jackpotAmount,
+        jackpotChance,
       };
     });
     res.json({ rooms: roomsWithStats });
