@@ -54,6 +54,10 @@ import {
   markAsRead,
   markAllAsRead,
 } from './controllers/notificationsController';
+import {
+  playKeno,
+  getKenoHistory,
+} from './controllers/kenoController';
 import { BingoEngine } from './engine/BingoEngine';
 import { KenoEngine } from './engine/KenoEngine';
 import { setupSocketHandlers } from './engine/socketHandler';
@@ -102,6 +106,12 @@ app.get('/api/wallet/withdrawals', authenticateJWT, getWithdrawalHistory);
 // ----------------------------------------------------
 app.get('/api/referrals/stats', authenticateJWT, getReferralStats);
 app.get('/api/referrals/leaderboard', authenticateJWT, getReferralLeaderboard);
+
+// ----------------------------------------------------
+// KENO ENDPOINTS
+// ----------------------------------------------------
+app.post('/api/keno/play', authenticateJWT, playKeno);
+app.get('/api/keno/history', authenticateJWT, getKenoHistory);
 
 // ----------------------------------------------------
 // NOTIFICATIONS ENDPOINTS

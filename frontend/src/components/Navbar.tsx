@@ -4,7 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '../context/AuthContext';
-import { Wallet, Users, LayoutDashboard, Trophy, LogOut, ShieldAlert, PlayCircle, Settings } from 'lucide-react';
+import { Wallet, Users, LayoutDashboard, Trophy, LogOut, ShieldAlert, PlayCircle, Settings, Dices } from 'lucide-react';
 import NotificationDropdown from './NotificationDropdown';
 
 export default function Navbar() {
@@ -52,6 +52,18 @@ export default function Navbar() {
           >
             <PlayCircle size={16} />
             Lobby
+          </Link>
+
+          <Link
+            href="/keno"
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold transition-all duration-300 ${
+              isActive('/keno')
+                ? 'text-emerald-400 bg-emerald-950/30 border border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.1)]'
+                : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5 border border-transparent'
+            }`}
+          >
+            <Dices size={16} />
+            Keno
           </Link>
 
           <Link

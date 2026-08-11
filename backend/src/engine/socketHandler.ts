@@ -2,6 +2,12 @@ import { Server, Socket } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import { BingoEngine } from './BingoEngine';
 import { KenoEngine } from './KenoEngine';
+import {
+  createSocketRateLimiter,
+  checkConnectionRate,
+  cleanupSocketTrackers,
+  decrementConnectionCount,
+} from '../middlewares/socketRateLimiter';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key-bingo-12345';
 
@@ -21,6 +27,11 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
 
     if (!token) {
       return next(new Error('Authentication error: Token missing'));
+    }
+
+    // Rate limit connections per IP
+    if (!checkConnectionRate(socket)) {
+      return next(new Error('Too many connections from this IP. Please wait before reconnecting.'));
     }
 
     try {
@@ -46,8 +57,11 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
 
     console.log(`Socket Connected: User ${user.username} (ID: ${user.id})`);
 
-    // Handle joining a room
-    socket.on('join_room', async ({ roomId }, callback) => {
+    // Create per-socket rate limiter (captures socket in closure)
+    const limit = createSocketRateLimiter(socket);
+
+    // ── Rate-limited: Join Room ──
+    socket.on('join_room', limit('join_room', async ({ roomId }: { roomId: string }, callback?: Function) => {
       try {
         // Leave a Keno room if the user is currently in one
         if (activeKenoRoomId) {
@@ -73,19 +87,19 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
         console.error(`Error joining room: ${err.message}`);
         if (callback) callback({ success: false, error: err.message });
       }
-    });
+    }));
 
-    // Handle leaving a room
-    socket.on('leave_room', () => {
+    // ── Rate-limited: Leave Room ──
+    socket.on('leave_room', limit('leave_room', () => {
       if (activeRoomId) {
         socket.leave(activeRoomId);
         engine.leaveRoom(activeRoomId, user.id, socket.id);
         activeRoomId = null;
       }
-    });
+    }));
 
     // --- KENO ---
-    socket.on('keno_join_room', async ({ roomId }, callback) => {
+    socket.on('keno_join_room', limit('keno_join_room', async ({ roomId }, callback) => {
       try {
         // Leave a Bingo room if the user is currently in one
         if (activeRoomId) {
@@ -109,7 +123,7 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
         console.error(`Error joining Keno room: ${err.message}`);
         if (callback) callback({ success: false, error: err.message });
       }
-    });
+    }));
 
     socket.on('keno_leave_room', () => {
       if (activeKenoRoomId) {
@@ -119,7 +133,7 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
       }
     });
 
-    socket.on('keno_pick_numbers', async ({ spots }, callback) => {
+    socket.on('keno_pick_numbers', limit('keno_pick_numbers', async ({ spots }, callback) => {
       if (!activeKenoRoomId) {
         if (callback) callback({ success: false, error: 'Not in a Keno room' });
         return;
@@ -132,7 +146,7 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
         console.error(`Keno pick failed: ${err.message}`);
         if (callback) callback({ success: false, error: err.message });
       }
-    });
+    }));
 
     // Handle card selection in the lobby
     socket.on('select_card', ({ cardId }, callback) => {
@@ -166,15 +180,15 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
       }
     });
 
-    // Handle number daub
-    socket.on('daub_number', ({ cardId, row, col }) => {
+    // ── Rate-limited: Daub Number ──
+    socket.on('daub_number', limit('daub_number', ({ cardId, row, col }: { cardId: string; row: number; col: number }) => {
       if (activeRoomId) {
         engine.daubNumber(activeRoomId, user.id, cardId, row, col);
       }
-    });
+    }));
 
-    // Handle claiming BINGO
-    socket.on('claim_bingo', async ({ cardId }, callback) => {
+    // ── Rate-limited: Claim BINGO ──
+    socket.on('claim_bingo', limit('claim_bingo', async ({ cardId }: { cardId: string }, callback?: Function) => {
       if (!activeRoomId) {
         if (callback) callback({ success: false, error: 'Not in a game room' });
         return;
@@ -187,10 +201,10 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
         console.error(`Bingo Claim Failed: ${err.message}`);
         if (callback) callback({ success: false, error: err.message });
       }
-    });
+    }));
 
-    // Handle Chat message
-    socket.on('send_chat', ({ message }) => {
+    // ── Rate-limited: Send Chat ──
+    socket.on('send_chat', limit('send_chat', ({ message }: { message: string }) => {
       if (activeRoomId && message && message.trim().length > 0) {
         io.to(activeRoomId).emit('chat_message', {
           username: user.username,
@@ -198,7 +212,7 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
           createdAt: new Date(),
         });
       }
-    });
+    }));
 
     // Handle Disconnect
     socket.on('disconnect', () => {
@@ -209,6 +223,8 @@ export const setupSocketHandlers = (io: Server, engine: BingoEngine, kenoEngine:
       if (activeKenoRoomId) {
         kenoEngine.leaveRoom(activeKenoRoomId, user.id, socket.id);
       }
+      cleanupSocketTrackers(socket);
+      decrementConnectionCount(socket);
     });
   });
 };

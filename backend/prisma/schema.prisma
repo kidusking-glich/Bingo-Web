@@ -69,6 +69,7 @@ model User {
   bingoCards        BingoCard[]
   gameParticipants  GameParticipant[]
   kenoTickets       KenoTicket[]
+  kenoWagers        KenoWager[]
   withdrawRequests  WithdrawalRequest[]
   depositRequests   DepositRequest[]
   referredEarnings  ReferralEarning[]
@@ -175,6 +176,20 @@ model KenoTicket {
   payout    Decimal  @default(0.0)
   isWinner  Boolean  @default(false)
   createdAt DateTime @default(now())
+}
+
+model KenoWager {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bet        Decimal
+  picks      Int[]
+  drawn      Int[]
+  matches    Int      @default(0)
+  multiplier Int      @default(0)
+  payout     Decimal  @default(0.0)
+  isWin      Boolean  @default(false)
+  createdAt  DateTime @default(now())
 }
 
 model ReferralEarning {

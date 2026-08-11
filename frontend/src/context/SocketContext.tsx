@@ -126,7 +126,8 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
 
     socketInstance.on('room_update', (data) => {
       setGameState(data.state);
-      setCountdown(data.countdown);
+      // Only reset countdown when lobby reopens (after game finishes) — live ticks come from room_countdown
+      if (data.state === 'WAITING') setCountdown(data.countdown);
       setCalledNumbers(data.calledNumbers);
       setPlayers(data.players);
     });
@@ -257,8 +258,6 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
           setWinnerInfo(null);
           setMyCards([]);
           setChatMessages([]);
-          // Refresh profile balance (fees deducted)
-          refreshProfile();
           resolve({ success: true });
         } else {
           resolve({ success: false, error: response?.error || 'Failed to join' });
